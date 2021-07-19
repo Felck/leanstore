@@ -50,7 +50,8 @@ void runThread(int t_i, std::atomic<bool>& keepRunning)
    }
 
    // main loop
-   std::vector<uint8_t> buf;
+   char iBuf[1] = {0};
+   std::vector<uint8_t> oBuf;
    while (keepRunning) {
       uint32_t w_id;
       if (FLAGS_tpcc_warehouse_affinity) {
@@ -59,9 +60,15 @@ void runThread(int t_i, std::atomic<bool>& keepRunning)
          w_id = TPCC::urand(1, FLAGS_tpcc_warehouse_count);
       }
 
-      TPCC::tx(buf, w_id);
-      writeMessage(sockfd, buf);
-      buf.clear();
+      TPCC::TransactionType t = TPCC::tx(oBuf, w_id);
+      writeMessage(sockfd, oBuf);
+      oBuf.clear();
+
+      if (read(sockfd, iBuf, 1) != 1 || *iBuf != static_cast<char>(t)) {
+         std::cout << "Error or unexpected answer: {" << (int)iBuf[0] << "," << (int)iBuf[1] << "}" << std::endl;
+         exit(EXIT_FAILURE);
+      }
+      iBuf[0] = 0;
    }
 
    close(sockfd);

@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "OBuffer.hpp"
+
 namespace Net
 {
 template <class Parser>
@@ -119,38 +121,6 @@ class Server
                connection = &connections.at(ev.data.fd);
                pthread_rwlock_unlock(&connLatch);
 
-               if (ev.events & EPOLLOUT) {
-                  // write from outBuffer
-                  auto& buf = connection->outBuffer;
-
-                  while (keepRunning) {
-                     auto n = send(ev.data.fd, &buf[0], buf.size(), MSG_NOSIGNAL);
-                     if (n == -1) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                           // socket buffer full
-                           break;
-                        } else if (errno == ECONNRESET) {
-                           // client closed connection
-                           closeConnection(ev.data.fd);
-                           // continue with the event loop
-                           goto continue_event_loop;
-                        } else {
-                           perror("send()");
-                           exit(EXIT_FAILURE);
-                        }
-                     } else if (static_cast<size_t>(n) != buf.size()) {
-                        // there's still some of the message left
-                        buf.erase(buf.begin(), buf.begin() + n);
-                        connection->epollEvents |= EPOLLOUT;
-                     } else {
-                        // complete message has been sent
-                        buf.clear();
-                        connection->epollEvents &= ~EPOLLOUT;
-                        break;
-                     }
-                  }
-               }
-
                if (ev.events & EPOLLIN) {
                   // read all data from socket until EAGAIN
                   while (keepRunning) {
@@ -180,6 +150,35 @@ class Server
                   }
                }
 
+               auto& buf = connection->oBuffer;
+               if (ev.events & EPOLLOUT || !buf.empty()) {
+                  // write from oBuffer to socket
+                  while (keepRunning) {
+                     auto n = connection->send();
+                     if (n == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                           // socket buffer full
+                           break;
+                        } else if (errno == ECONNRESET) {
+                           // client closed connection
+                           closeConnection(ev.data.fd);
+                           // continue with the event loop
+                           goto continue_event_loop;
+                        } else {
+                           perror("send()");
+                           exit(EXIT_FAILURE);
+                        }
+                     } else if (buf.empty()) {
+                        // complete message has been sent
+                        connection->epollEvents &= ~EPOLLOUT;
+                        break;
+                     } else {
+                        // there's still some of the message left
+                        connection->epollEvents |= EPOLLOUT;
+                     }
+                  }
+               }
+
                // rearm socket
                ev.events = connection->epollEvents;
                if (epoll_ctl(epfd, EPOLL_CTL_MOD, ev.data.fd, &ev) == -1) {
@@ -191,14 +190,16 @@ class Server
          continue_event_loop:;
          }
       }
-   };
+   }
 
   private:
    struct Connection {
       Connection(int fd) : fd(fd){};
 
-      std::vector<uint8_t> outBuffer;
-      Parser parser;
+      ssize_t send() { return oBuffer.send(fd); };
+
+      OBuffer<uint8_t> oBuffer;
+      Parser parser{oBuffer};
       uint32_t epollEvents = EPOLLIN | EPOLLET | EPOLLONESHOT;
       int fd;
    };

@@ -1,6 +1,7 @@
 #include <vector>
 
 #include "Serializer.hpp"
+#include "TransactionTypes.hpp"
 #include "leanstore/utils/RandomGenerator.hpp"
 #include "types.hpp"
 
@@ -144,7 +145,7 @@ Timestamp currentTimestamp()
 }
 
 // run
-void newOrderRnd(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType newOrderRnd(std::vector<uint8_t>& buf, Integer w_id)
 {
    Integer d_id = urand(1, 10);
    Integer c_id = getCustomerID();
@@ -171,30 +172,35 @@ void newOrderRnd(std::vector<uint8_t>& buf, Integer w_id)
       qtys.push_back(urand(1, 10));
    }
    serializeNewOrder(buf, w_id, d_id, c_id, lineNumbers, supwares, itemids, qtys, currentTimestamp());
+   return TransactionType::newOrder;
 }
 
-void deliveryRnd(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType deliveryRnd(std::vector<uint8_t>& buf, Integer w_id)
 {
    Integer carrier_id = urand(1, 10);
    serializeDelivery(buf, w_id, carrier_id, currentTimestamp());
+   return TransactionType::delivery;
 }
 
-void stockLevelRnd(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType stockLevelRnd(std::vector<uint8_t>& buf, Integer w_id)
 {
    serializeStockLevel(buf, w_id, urand(1, 10), urand(10, 20));
+   return TransactionType::stockLevel;
 }
 
-void orderStatusRnd(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType orderStatusRnd(std::vector<uint8_t>& buf, Integer w_id)
 {
    Integer d_id = urand(1, 10);
    if (urand(1, 100) <= 40) {
       serializeOrderStatusId(buf, w_id, d_id, getCustomerID());
+      return TransactionType::orderStatusId;
    } else {
       serializeOrderStatusName(buf, w_id, d_id, genName(getNonUniformRandomLastNameForRun()));
+      return TransactionType::orderStatusName;
    }
 }
 
-void paymentRnd(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType paymentRnd(std::vector<uint8_t>& buf, Integer w_id)
 {
    Integer d_id = urand(1, 10);
    Integer c_w_id = w_id;
@@ -208,32 +214,33 @@ void paymentRnd(std::vector<uint8_t>& buf, Integer w_id)
 
    if (urand(1, 100) <= 60) {
       serializePaymentByName(buf, w_id, d_id, c_w_id, c_d_id, genName(getNonUniformRandomLastNameForRun()), h_date, h_amount, currentTimestamp());
+      return TransactionType::paymentByName;
    } else {
       serializePaymentById(buf, w_id, d_id, c_w_id, c_d_id, getCustomerID(), h_date, h_amount, currentTimestamp());
+      return TransactionType::paymentById;
    }
 }
 
 // was: [w_begin, w_end]
-void tx(std::vector<uint8_t>& buf, Integer w_id)
+TransactionType tx(std::vector<uint8_t>& buf, Integer w_id)
 {
    // micro-optimized version of weighted distribution
    int rnd = leanstore::utils::RandomGenerator::getRand(0, 10000);
    if (rnd < 4300) {
-      paymentRnd(buf, w_id);
+      return paymentRnd(buf, w_id);
    }
    rnd -= 4300;
    if (rnd < 400) {
-      orderStatusRnd(buf, w_id);
+      return orderStatusRnd(buf, w_id);
    }
    rnd -= 400;
    if (rnd < 400) {
-      deliveryRnd(buf, w_id);
+      return deliveryRnd(buf, w_id);
    }
    rnd -= 400;
    if (rnd < 400) {
-      stockLevelRnd(buf, w_id);
+      return stockLevelRnd(buf, w_id);
    }
-   rnd -= 400;
-   newOrderRnd(buf, w_id);
+   return newOrderRnd(buf, w_id);
 }
 }  // namespace TPCC

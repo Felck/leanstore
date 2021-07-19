@@ -4,21 +4,12 @@
 #include <atomic>
 #include <vector>
 
+#include "OBuffer.hpp"
+#include "TransactionTypes.hpp"
 #include "workload.hpp"
 
 namespace TPCC
 {
-enum class FunctionID : uint8_t {
-   notSet = 0,
-   newOrder = 1,
-   delivery = 2,
-   stockLevel = 3,
-   orderStatusId = 4,
-   orderStatusName = 5,
-   paymentById = 6,
-   paymentByName = 7
-};
-
 union FunctionParams {
    struct NewOrder {
       uint64_t timestamp;
@@ -84,35 +75,37 @@ class Parser
    // TODO: calc exact value
    static constexpr size_t maxPacketSize = 200;
 
+   Parser(Net::OBuffer<uint8_t>& oBuffer) : oBuffer(oBuffer) {}
+
    template <typename Func>
    void parse(const uint8_t* data, size_t length, Func callback)
    {
       for (size_t i = 0; i != length; i++) {
          switch (funcID) {
-            case FunctionID::notSet:
+            case TransactionType::notSet:
                // new paket: read function ID
-               funcID = static_cast<FunctionID>(data[i]);
+               funcID = static_cast<TransactionType>(data[i]);
                byteIndex = 0;
                break;
-            case FunctionID::newOrder:
+            case TransactionType::newOrder:
                parseNewOrder(data[i], callback);
                break;
-            case FunctionID::delivery:
+            case TransactionType::delivery:
                parseDelivery(data[i], callback);
                break;
-            case FunctionID::stockLevel:
+            case TransactionType::stockLevel:
                parseStockLevel(data[i], callback);
                break;
-            case FunctionID::orderStatusId:
+            case TransactionType::orderStatusId:
                parseOrderStatusId(data[i], callback);
                break;
-            case FunctionID::orderStatusName:
+            case TransactionType::orderStatusName:
                parseOrderStatusName(data[i], callback);
                break;
-            case FunctionID::paymentById:
+            case TransactionType::paymentById:
                parsePaymentById(data[i], callback);
                break;
-            case FunctionID::paymentByName:
+            case TransactionType::paymentByName:
                parsePaymentByName(data[i], callback);
                break;
          }
@@ -124,17 +117,16 @@ class Parser
    size_t fieldIndex = 0;
    size_t vecIndex = 0;
    size_t byteIndex = 0;
-   FunctionID funcID = FunctionID::notSet;
+   TransactionType funcID = TransactionType::notSet;
    FunctionParams params;
    VectorParams vParams;
-
-   void runTPCCFunction(){};
+   Net::OBuffer<uint8_t>& oBuffer;
 
    inline void setUpNewPaket()
    {
       fieldIndex = 0;
       byteIndex = 0;
-      funcID = FunctionID::notSet;
+      funcID = TransactionType::notSet;
    }
 
    template <typename Func>
@@ -178,10 +170,15 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   newOrder(params.newOrder.w_id, params.newOrder.d_id, params.newOrder.c_id, vParams.lineNumbers, vParams.supwares, vParams.itemids,
                            vParams.qtys, params.newOrder.timestamp);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::newOrder));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -209,9 +206,14 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   delivery(params.delivery.w_id, params.delivery.carrier_id, params.delivery.datetime);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::delivery));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -239,9 +241,14 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   stockLevel(params.stockLevel.w_id, params.stockLevel.d_id, params.stockLevel.threshold);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::stockLevel));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -269,9 +276,14 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   orderStatusId(params.orderStatusId.w_id, params.orderStatusId.d_id, params.orderStatusId.c_id);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::orderStatusId));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -308,9 +320,14 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   orderStatusName(params.orderStatusName.w_id, params.orderStatusName.d_id, Varchar<16>(params.orderStatusName.c_last));
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::orderStatusName));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -353,10 +370,15 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   paymentById(params.paymentById.w_id, params.paymentById.d_id, params.paymentById.c_w_id, params.paymentById.c_d_id,
                               params.paymentById.c_id, params.paymentById.h_date, params.paymentById.h_amount, params.paymentById.datetime);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::paymentById));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
@@ -411,11 +433,16 @@ class Parser
                jumpmuTry()
                {
                   cr::Worker::my().startTX();
+                  oBuffer.setResetPoint();
+
                   paymentByName(params.paymentByName.w_id, params.paymentByName.d_id, params.paymentByName.c_w_id, params.paymentByName.c_d_id,
                                 Varchar<16>(params.paymentByName.c_last), params.paymentByName.h_date, params.paymentByName.h_amount,
                                 params.paymentByName.datetime);
+                  oBuffer.push(static_cast<uint8_t>(TransactionType::paymentByName));
+
                   if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
                      cr::Worker::my().abortTX();
+                     oBuffer.reset();
                   } else {
                      cr::Worker::my().commitTX();
                      callback();
