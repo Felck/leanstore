@@ -2,31 +2,21 @@
 
 #include <endian.h>
 
-#include <type_traits>
+#include "BitCast.hpp"
 
 namespace TPCC
 {
-// pre c++20 bit_cast using memcpy (from cppreference.com)
-template <class To, class From>
-typename std::enable_if_t<sizeof(To) == sizeof(From) && std::is_trivially_copyable_v<From> && std::is_trivially_copyable_v<To>, To> bit_cast(
-    const From& src) noexcept
-{
-   static_assert(std::is_trivially_constructible_v<To>, "This implementation additionally requires destination type to be trivially constructible");
-
-   To dst;
-   std::memcpy(&dst, &src, sizeof(To));
-   return dst;
-}
-
 void push32s(std::vector<uint8_t>& buf, int32_t data)
 {
    auto d = htobe32(data);
+   // NOTE: technically UB
    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&d), reinterpret_cast<uint8_t*>(&d) + 4);
 }
 
 void push64(std::vector<uint8_t>& buf, uint64_t data)
 {
    auto d = htobe64(data);
+   // NOTE: technically UB
    buf.insert(buf.end(), reinterpret_cast<uint8_t*>(&d), reinterpret_cast<uint8_t*>(&d) + 8);
 }
 
