@@ -10,6 +10,7 @@ enum class TransactionType : uint8_t {
    orderStatusId = 4,
    orderStatusName = 5,
    paymentById = 6,
-   paymentByName = 7
+   paymentByName = 7,
+   aborted = 8
 };
 }

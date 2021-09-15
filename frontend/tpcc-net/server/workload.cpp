@@ -255,10 +255,18 @@ void newOrder(Integer w_id,
               const vector<Integer>& supwares,
               const vector<Integer>& itemids,
               const vector<Integer>& qtys,
-              Timestamp timestamp)
+              Timestamp timestamp,
+              Net::OBuffer<uint8_t>& oBuffer)
 {
+   Numeric c_discount;
+   customer.lookup1({w_id, d_id, c_id}, [&](const customer_t& rec) {
+      c_discount = rec.c_discount;
+      oBuffer.pushVC(rec.c_last);
+      oBuffer.pushVC(rec.c_credit);
+      oBuffer.pushD(rec.c_discount);
+   });
+
    Numeric w_tax = warehouse.lookupField({w_id}, &warehouse_t::w_tax);
-   Numeric c_discount = customer.lookupField({w_id, d_id, c_id}, &customer_t::c_discount);
    Numeric d_tax;
    Integer o_id;
 
@@ -269,6 +277,11 @@ void newOrder(Integer w_id,
           o_id = rec.d_next_o_id++;
        },
        WALUpdate1(district_t, d_next_o_id));
+
+   oBuffer.pushD(w_tax);
+   oBuffer.pushD(d_tax);
+   oBuffer.push32(o_id);
+   oBuffer.push64(timestamp);  // o_entry_d
 
    Numeric all_local = 1;
    for (Integer sw : supwares)
@@ -296,15 +309,26 @@ void newOrder(Integer w_id,
           WALUpdate3(stock_t, s_remote_cnt, s_order_cnt, s_ytd));
    }
 
+   // o_ol_cnt
+   oBuffer.push8(lineNumbers.size());
+
+   Numeric total_amount = 0;
    for (unsigned i = 0; i < lineNumbers.size(); i++) {
       Integer lineNumber = lineNumbers[i];
       Integer supware = supwares[i];
       Integer itemid = itemids[i];
       Numeric qty = qtys[i];
 
-      Numeric i_price = item.lookupField({itemid}, &item_t::i_price);  // TODO: rollback on miss
+      Numeric i_price;  // TODO: rollback on miss
+      item.lookup1({itemid}, [&](const item_t& rec) {
+         i_price = rec.i_price;
+         oBuffer.pushVC(rec.i_name);
+         oBuffer.pushD(i_price);
+      });
+
       Varchar<24> s_dist;
       stock.lookup1({w_id, itemid}, [&](const stock_t& rec) {
+         oBuffer.pushD(rec.s_quantity);
          switch (d_id) {
             case 1:
                s_dist = rec.s_dist_01;
@@ -342,10 +366,14 @@ void newOrder(Integer w_id,
          }
       });
       Numeric ol_amount = qty * i_price * (1.0 + w_tax + d_tax) * (1.0 - c_discount);
+      oBuffer.pushD(ol_amount);
+      total_amount += ol_amount;
       Timestamp ol_delivery_d = 0;  // NULL
       orderline.insert({w_id, d_id, o_id, lineNumber}, {itemid, supware, ol_delivery_d, qty, ol_amount, s_dist});
       // TODO: i_data, s_data
    }
+
+   oBuffer.pushD(total_amount);
 }
 
 void delivery(Integer w_id, Integer carrier_id, Timestamp datetime)
@@ -431,7 +459,7 @@ void delivery(Integer w_id, Integer carrier_id, Timestamp datetime)
    }
 }
 
-void stockLevel(Integer w_id, Integer d_id, Integer threshold)
+void stockLevel(Integer w_id, Integer d_id, Integer threshold, Net::OBuffer<uint8_t>& oBuffer)
 {
    Integer o_id = district.lookupField({w_id, d_id}, &district_t::d_next_o_id);
 
@@ -462,24 +490,21 @@ void stockLevel(Integer w_id, Integer d_id, Integer threshold)
        [&]() { items.clear(); });
    std::sort(items.begin(), items.end());
    std::unique(items.begin(), items.end());
-   unsigned count = 0;
+   uint32_t count = 0;
    for (Integer i_id : items) {
       auto res_s_quantity = stock.lookupField({w_id, i_id}, &stock_t::s_quantity);
       count += res_s_quantity < threshold;
    }
+   oBuffer.push32(count);
 }
 
-void orderStatusId(Integer w_id, Integer d_id, Integer c_id)
+void orderStatusId(Integer w_id, Integer d_id, Integer c_id, Net::OBuffer<uint8_t>& oBuffer)
 {
-   Varchar<16> c_first;
-   Varchar<2> c_middle;
-   Varchar<16> c_last;
-   Numeric c_balance;
    customer.lookup1({w_id, d_id, c_id}, [&](const customer_t& rec) {
-      c_first = rec.c_first;
-      c_middle = rec.c_middle;
-      c_last = rec.c_last;
-      c_balance = rec.c_balance;
+      oBuffer.pushVC(rec.c_first);
+      oBuffer.pushVC(rec.c_middle);
+      oBuffer.pushVC(rec.c_last);
+      oBuffer.pushD(rec.c_balance);
    });
 
    Integer o_id = -1;
@@ -510,29 +535,27 @@ void orderStatusId(Integer w_id, Integer d_id, Integer c_id)
    }
    ensure(o_id > -1);
    // -------------------------------------------------------------------------------------
-   Timestamp o_entry_d;
-   Integer o_carrier_id;
+   Numeric o_ol_cnt;
 
    order.lookup1({w_id, d_id, o_id}, [&](const order_t& rec) {
-      o_entry_d = rec.o_entry_d;
-      o_carrier_id = rec.o_carrier_id;
+      oBuffer.push64(rec.o_entry_d);
+      oBuffer.push32(rec.o_carrier_id);
+      o_ol_cnt = rec.o_ol_cnt;
    });
-   Integer ol_i_id;
-   Integer ol_supply_w_id;
-   Timestamp ol_delivery_d;
-   Numeric ol_quantity;
-   Numeric ol_amount;
+
+   oBuffer.pushD(o_ol_cnt);
+
    {
       // AAA: expensive
       orderline.scan(
           {w_id, d_id, o_id, minInteger},
           [&](const orderline_t::Key& key, const orderline_t& rec) {
              if (key.ol_w_id == w_id && key.ol_d_id == d_id && key.ol_o_id == o_id) {
-                ol_i_id = rec.ol_i_id;
-                ol_supply_w_id = rec.ol_supply_w_id;
-                ol_delivery_d = rec.ol_delivery_d;
-                ol_quantity = rec.ol_quantity;
-                ol_amount = rec.ol_amount;
+                oBuffer.push32(rec.ol_supply_w_id);
+                oBuffer.push32(rec.ol_i_id);
+                oBuffer.pushD(rec.ol_quantity);
+                oBuffer.pushD(rec.ol_amount);
+                oBuffer.push64(rec.ol_delivery_d);
                 return true;
              }
              return false;
@@ -543,7 +566,7 @@ void orderStatusId(Integer w_id, Integer d_id, Integer c_id)
    }
 }
 
-void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last)
+void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last, Net::OBuffer<uint8_t>& oBuffer)
 {
    vector<Integer> ids;
    customerwdl.scan(
@@ -563,6 +586,13 @@ void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last)
    if ((c_count % 2) == 0)
       index -= 1;
    Integer c_id = ids[index];
+
+   oBuffer.push32(c_id);
+   customer.lookup1({w_id, d_id, c_id}, [&](const customer_t& rec) {
+      oBuffer.pushVC(rec.c_first);
+      oBuffer.pushVC(rec.c_middle);
+      oBuffer.pushD(rec.c_balance);
+   });
 
    Integer o_id = -1;
    // latest order id desc
@@ -591,12 +621,25 @@ void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last)
       ensure(o_id > -1);
    }
    // -------------------------------------------------------------------------------------
-   Timestamp ol_delivery_d;
+   Numeric o_ol_cnt;
+
+   order.lookup1({w_id, d_id, o_id}, [&](const order_t& rec) {
+      oBuffer.push64(rec.o_entry_d);
+      oBuffer.push32(rec.o_carrier_id);
+      o_ol_cnt = rec.o_ol_cnt;
+   });
+
+   oBuffer.pushD(o_ol_cnt);
+
    orderline.scan(
        {w_id, d_id, o_id, minInteger},
        [&](const orderline_t::Key& key, const orderline_t& rec) {
           if (key.ol_w_id == w_id && key.ol_d_id == d_id && key.ol_o_id == o_id) {
-             ol_delivery_d = rec.ol_delivery_d;
+             oBuffer.push32(rec.ol_supply_w_id);
+             oBuffer.push32(rec.ol_i_id);
+             oBuffer.pushD(rec.ol_quantity);
+             oBuffer.pushD(rec.ol_amount);
+             oBuffer.push64(rec.ol_delivery_d);
              return true;
           }
           return false;
@@ -606,41 +649,36 @@ void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last)
        });
 }
 
-void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Integer c_id, Timestamp h_date, Numeric h_amount, Timestamp datetime)
+void paymentById(Integer w_id,
+                 Integer d_id,
+                 Integer c_w_id,
+                 Integer c_d_id,
+                 Integer c_id,
+                 Timestamp h_date,
+                 Numeric h_amount,
+                 Timestamp datetime,
+                 Net::OBuffer<uint8_t>& oBuffer)
 {
    Varchar<10> w_name;
-   Varchar<20> w_street_1;
-   Varchar<20> w_street_2;
-   Varchar<20> w_city;
-   Varchar<2> w_state;
-   Varchar<9> w_zip;
-   Numeric w_ytd;
    warehouse.lookup1({w_id}, [&](const warehouse_t& rec) {
       w_name = rec.w_name;
-      w_street_1 = rec.w_street_1;
-      w_street_2 = rec.w_street_2;
-      w_city = rec.w_city;
-      w_state = rec.w_state;
-      w_zip = rec.w_zip;
-      w_ytd = rec.w_ytd;
+      oBuffer.pushVC(rec.w_street_1);
+      oBuffer.pushVC(rec.w_street_2);
+      oBuffer.pushVC(rec.w_city);
+      oBuffer.pushVC(rec.w_state);
+      oBuffer.pushVC(rec.w_zip);
    });
    warehouse.update1(
        {w_id}, [&](warehouse_t& rec) { rec.w_ytd += h_amount; }, WALUpdate1(warehouse_t, w_ytd));
+
    Varchar<10> d_name;
-   Varchar<20> d_street_1;
-   Varchar<20> d_street_2;
-   Varchar<20> d_city;
-   Varchar<2> d_state;
-   Varchar<9> d_zip;
-   Numeric d_ytd;
    district.lookup1({w_id, d_id}, [&](const district_t& rec) {
       d_name = rec.d_name;
-      d_street_1 = rec.d_street_1;
-      d_street_2 = rec.d_street_2;
-      d_city = rec.d_city;
-      d_state = rec.d_state;
-      d_zip = rec.d_zip;
-      d_ytd = rec.d_ytd;
+      oBuffer.pushVC(rec.d_street_1);
+      oBuffer.pushVC(rec.d_street_2);
+      oBuffer.pushVC(rec.d_city);
+      oBuffer.pushVC(rec.d_state);
+      oBuffer.pushVC(rec.d_zip);
    });
    district.update1(
        {w_id, d_id}, [&](district_t& rec) { rec.d_ytd += h_amount; }, WALUpdate1(district_t, d_ytd));
@@ -656,10 +694,24 @@ void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Int
       c_balance = rec.c_balance;
       c_ytd_payment = rec.c_ytd_payment;
       c_payment_cnt = rec.c_payment_cnt;
+      oBuffer.pushVC(rec.c_first);
+      oBuffer.pushVC(rec.c_middle);
+      oBuffer.pushVC(rec.c_last);
+      oBuffer.pushVC(rec.c_street_1);
+      oBuffer.pushVC(rec.c_street_2);
+      oBuffer.pushVC(rec.c_city);
+      oBuffer.pushVC(rec.c_state);
+      oBuffer.pushVC(rec.c_zip);
+      oBuffer.pushVC(rec.c_phone);
+      oBuffer.push64(rec.c_since);
+      oBuffer.pushVC(rec.c_credit);
+      oBuffer.pushD(rec.c_credit_lim);
+      oBuffer.pushD(rec.c_discount);
    });
    Numeric c_new_balance = c_balance - h_amount;
    Numeric c_new_ytd_payment = c_ytd_payment + h_amount;
    Numeric c_new_payment_cnt = c_payment_cnt + 1;
+   oBuffer.pushD(c_new_balance);
 
    if (c_credit == "BC") {
       Varchar<500> c_new_data;
@@ -677,6 +729,10 @@ void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Int
              rec.c_payment_cnt = c_new_payment_cnt;
           },
           WALUpdate4(customer_t, c_data, c_balance, c_ytd_payment, c_payment_cnt));
+
+      auto c_new_data_length = c_new_data.length > 200 ? 200 : c_new_data.length;
+      oBuffer.push8(c_new_data_length);
+      oBuffer.push(c_new_data.data, c_new_data.data + c_new_data_length);
    } else {
       customer.update1(
           {c_w_id, c_d_id, c_id},
@@ -686,6 +742,9 @@ void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Int
              rec.c_payment_cnt = c_new_payment_cnt;
           },
           WALUpdate3(customer_t, c_balance, c_ytd_payment, c_payment_cnt));
+
+      // don't return c_data, if c_credit != "BC"
+      oBuffer.push8(0);
    }
 
    Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;
@@ -701,42 +760,29 @@ void paymentByName(Integer w_id,
                    Varchar<16> c_last,
                    Timestamp h_date,
                    Numeric h_amount,
-                   Timestamp datetime)
+                   Timestamp datetime,
+                   Net::OBuffer<uint8_t>& oBuffer)
 {
    Varchar<10> w_name;
-   Varchar<20> w_street_1;
-   Varchar<20> w_street_2;
-   Varchar<20> w_city;
-   Varchar<2> w_state;
-   Varchar<9> w_zip;
-   Numeric w_ytd;
    warehouse.lookup1({w_id}, [&](const warehouse_t& rec) {
       w_name = rec.w_name;
-      w_street_1 = rec.w_street_1;
-      w_street_2 = rec.w_street_2;
-      w_city = rec.w_city;
-      w_state = rec.w_state;
-      w_zip = rec.w_zip;
-      w_ytd = rec.w_ytd;
+      oBuffer.pushVC(rec.w_street_1);
+      oBuffer.pushVC(rec.w_street_2);
+      oBuffer.pushVC(rec.w_city);
+      oBuffer.pushVC(rec.w_state);
+      oBuffer.pushVC(rec.w_zip);
    });
 
    warehouse.update1(
        {w_id}, [&](warehouse_t& rec) { rec.w_ytd += h_amount; }, WALUpdate1(warehouse_t, w_ytd));
    Varchar<10> d_name;
-   Varchar<20> d_street_1;
-   Varchar<20> d_street_2;
-   Varchar<20> d_city;
-   Varchar<2> d_state;
-   Varchar<9> d_zip;
-   Numeric d_ytd;
    district.lookup1({w_id, d_id}, [&](const district_t& rec) {
       d_name = rec.d_name;
-      d_street_1 = rec.d_street_1;
-      d_street_2 = rec.d_street_2;
-      d_city = rec.d_city;
-      d_state = rec.d_state;
-      d_zip = rec.d_zip;
-      d_ytd = rec.d_ytd;
+      oBuffer.pushVC(rec.d_street_1);
+      oBuffer.pushVC(rec.d_street_2);
+      oBuffer.pushVC(rec.d_city);
+      oBuffer.pushVC(rec.d_state);
+      oBuffer.pushVC(rec.d_zip);
    });
    district.update1(
        {w_id, d_id}, [&](district_t& rec) { rec.d_ytd += h_amount; }, WALUpdate1(district_t, d_ytd));
@@ -772,10 +818,24 @@ void paymentByName(Integer w_id,
       c_balance = rec.c_balance;
       c_ytd_payment = rec.c_ytd_payment;
       c_payment_cnt = rec.c_payment_cnt;
+      oBuffer.pushVC(rec.c_first);
+      oBuffer.pushVC(rec.c_middle);
+      // NOTE: not returning oBuffer.pushVC(rec.c_last);
+      oBuffer.pushVC(rec.c_street_1);
+      oBuffer.pushVC(rec.c_street_2);
+      oBuffer.pushVC(rec.c_city);
+      oBuffer.pushVC(rec.c_state);
+      oBuffer.pushVC(rec.c_zip);
+      oBuffer.pushVC(rec.c_phone);
+      oBuffer.push64(rec.c_since);
+      oBuffer.pushVC(rec.c_credit);
+      oBuffer.pushD(rec.c_credit_lim);
+      oBuffer.pushD(rec.c_discount);
    });
    Numeric c_new_balance = c_balance - h_amount;
    Numeric c_new_ytd_payment = c_ytd_payment + h_amount;
    Numeric c_new_payment_cnt = c_payment_cnt + 1;
+   oBuffer.pushD(c_new_balance);
 
    if (c_credit == "BC") {
       Varchar<500> c_new_data;
@@ -793,6 +853,10 @@ void paymentByName(Integer w_id,
              rec.c_payment_cnt = c_new_payment_cnt;
           },
           WALUpdate4(customer_t, c_data, c_balance, c_ytd_payment, c_payment_cnt));
+
+      auto c_new_data_length = c_new_data.length > 200 ? 200 : c_new_data.length;
+      oBuffer.push8(c_new_data_length);
+      oBuffer.push(c_new_data.data, c_new_data.data + c_new_data_length);
    } else {
       customer.update1(
           {c_w_id, c_d_id, c_id},
@@ -802,6 +866,9 @@ void paymentByName(Integer w_id,
              rec.c_payment_cnt = c_new_payment_cnt;
           },
           WALUpdate3(customer_t, c_balance, c_ytd_payment, c_payment_cnt));
+
+      // don't return c_data, if c_credit != "BC"
+      oBuffer.push8(0);
    }
 
    Varchar<24> h_new_data = Varchar<24>(w_name) || Varchar<24>("    ") || d_name;

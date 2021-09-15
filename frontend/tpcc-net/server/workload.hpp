@@ -1,5 +1,6 @@
 #include <gflags/gflags.h>
 
+#include "OBuffer.hpp"
 #include "adapter.hpp"
 #include "schema.hpp"
 
@@ -38,12 +39,21 @@ void newOrder(Integer w_id,
               const vector<Integer>& supwares,
               const vector<Integer>& itemids,
               const vector<Integer>& qtys,
-              Timestamp timestamp);
+              Timestamp timestamp,
+              Net::OBuffer<uint8_t>& oBuffer);
 void delivery(Integer w_id, Integer carrier_id, Timestamp datetime);
-void orderStatusId(Integer w_id, Integer d_id, Integer c_id);
-void stockLevel(Integer w_id, Integer d_id, Integer threshold);
-void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last);
-void paymentById(Integer w_id, Integer d_id, Integer c_w_id, Integer c_d_id, Integer c_id, Timestamp h_date, Numeric h_amount, Timestamp datetime);
+void stockLevel(Integer w_id, Integer d_id, Integer threshold, Net::OBuffer<uint8_t>& oBuffer);
+void orderStatusId(Integer w_id, Integer d_id, Integer c_id, Net::OBuffer<uint8_t>& oBuffer);
+void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last, Net::OBuffer<uint8_t>& oBuffer);
+void paymentById(Integer w_id,
+                 Integer d_id,
+                 Integer c_w_id,
+                 Integer c_d_id,
+                 Integer c_id,
+                 Timestamp h_date,
+                 Numeric h_amount,
+                 Timestamp datetime,
+                 Net::OBuffer<uint8_t>& oBuffer);
 void paymentByName(Integer w_id,
                    Integer d_id,
                    Integer c_w_id,
@@ -51,5 +61,6 @@ void paymentByName(Integer w_id,
                    Varchar<16> c_last,
                    Timestamp h_date,
                    Numeric h_amount,
-                   Timestamp datetime);
+                   Timestamp datetime,
+                   Net::OBuffer<uint8_t>& oBuffer);
 }  // namespace TPCC
