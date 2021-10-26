@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 
+#include "Parser.hpp"
 #include "workload.hpp"
 
 DEFINE_string(ip, "localhost", "Server IP adress");
@@ -18,7 +19,6 @@ DEFINE_uint32(port, 8888, "Server port");
 DEFINE_uint32(threads, 4, "Number of threads");
 DEFINE_uint32(run_for_secs, 0, "");
 DEFINE_uint32(tpcc_warehouse_count, 1, "");
-DEFINE_bool(tpcc_warehouse_affinity, false, "");
 
 void writeMessage(int fd, std::vector<uint8_t>& msg)
 {
@@ -50,25 +50,36 @@ void runThread(int t_i, std::atomic<bool>& keepRunning)
    }
 
    // main loop
-   char iBuf[1] = {0};
+   char iBuf[TPCC::Parser::maxPacketSize] = {0};
    std::vector<uint8_t> oBuf;
+   TPCC::Parser parser;
+
+   TPCC::TransactionType t = TPCC::tx(oBuf, TPCC::urand(1, FLAGS_tpcc_warehouse_count));
+   writeMessage(sockfd, oBuf);
+   oBuf.clear();
+
    while (keepRunning) {
-      uint32_t w_id;
-      if (FLAGS_tpcc_warehouse_affinity) {
-         w_id = t_i + 1;
+      ssize_t n = read(sockfd, iBuf, TPCC::Parser::maxPacketSize);
+      if (n == -1) {
+         // error
+         perror("read: ");
+         keepRunning = false;
+      } else if (n == 0) {
+         // con closed
+         std::cout << "con closed" << std::endl;
+         keepRunning = false;
       } else {
-         w_id = TPCC::urand(1, FLAGS_tpcc_warehouse_count);
+         parser.parse(reinterpret_cast<uint8_t*>(iBuf), n, [&]() {
+            if (parser.getTxType() == TPCC::TransactionType::error) {
+               // std::cout << "Error with TxType " << static_cast<int>(t) << std::endl;
+            } else {
+               assert(t == parser.getTxType());
+            }
+            t = TPCC::tx(oBuf, TPCC::urand(1, FLAGS_tpcc_warehouse_count));
+            writeMessage(sockfd, oBuf);
+            oBuf.clear();
+         });
       }
-
-      TPCC::TransactionType t = TPCC::tx(oBuf, w_id);
-      writeMessage(sockfd, oBuf);
-      oBuf.clear();
-
-      if (read(sockfd, iBuf, 1) != 1 || *iBuf != static_cast<char>(t)) {
-         std::cout << "Error or unexpected answer: {" << (int)iBuf[0] << "," << (int)iBuf[1] << "}" << std::endl;
-         exit(EXIT_FAILURE);
-      }
-      iBuf[0] = 0;
    }
 
    close(sockfd);

@@ -1,5 +1,7 @@
 #include "workload.hpp"
 
+#include "TransactionTypes.hpp"
+
 DEFINE_bool(order_wdc_index, true, "");
 DEFINE_int32(tpcc_abort_pct, 0, "");
 DEFINE_bool(tpcc_remove, true, "");
@@ -535,7 +537,7 @@ void orderStatusId(Integer w_id, Integer d_id, Integer c_id, Net::OBuffer<uint8_
    }
    ensure(o_id > -1);
    // -------------------------------------------------------------------------------------
-   Numeric o_ol_cnt;
+   uint8_t o_ol_cnt;
 
    order.lookup1({w_id, d_id, o_id}, [&](const order_t& rec) {
       oBuffer.push64(rec.o_entry_d);
@@ -543,7 +545,7 @@ void orderStatusId(Integer w_id, Integer d_id, Integer c_id, Net::OBuffer<uint8_
       o_ol_cnt = rec.o_ol_cnt;
    });
 
-   oBuffer.pushD(o_ol_cnt);
+   oBuffer.push8(o_ol_cnt);
 
    {
       // AAA: expensive
@@ -580,8 +582,12 @@ void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last, Net::OBuffe
        },
        [&]() { ids.clear(); });
    unsigned c_count = ids.size();
-   if (c_count == 0)
-      return;  // TODO: rollback
+   if (c_count == 0) {
+      // c_last not found
+      oBuffer.reset();
+      oBuffer.push8(static_cast<uint8_t>(TransactionType::error));
+      return;
+   }
    unsigned index = c_count / 2;
    if ((c_count % 2) == 0)
       index -= 1;
@@ -800,12 +806,18 @@ void paymentByName(Integer w_id,
        },
        [&]() { ids.clear(); });
    unsigned c_count = ids.size();
-   if (c_count == 0)
-      return;  // TODO: rollback
+   if (c_count == 0) {
+      // c_last not found
+      oBuffer.reset();
+      oBuffer.push8(static_cast<uint8_t>(TransactionType::error));
+      // TODO: rollback
+      return;
+   }
    unsigned index = c_count / 2;
    if ((c_count % 2) == 0)
       index -= 1;
    Integer c_id = ids[index];
+   oBuffer.push32(c_id);
 
    Varchar<500> c_data;
    Varchar<2> c_credit;

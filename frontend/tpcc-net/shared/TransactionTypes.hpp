@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdint>
 
 namespace TPCC
@@ -11,6 +13,7 @@ enum class TransactionType : uint8_t {
    orderStatusName = 5,
    paymentById = 6,
    paymentByName = 7,
-   aborted = 8
+   aborted = 8,
+   error = 9
 };
 }

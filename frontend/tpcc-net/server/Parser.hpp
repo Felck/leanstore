@@ -83,10 +83,10 @@ class Parser
    void parse(const uint8_t* data, size_t length, Func callback)
    {
       for (size_t i = 0; i != length; i++) {
-         switch (funcID) {
+         switch (txType) {
             case TransactionType::notSet:
                // new paket: read function ID
-               funcID = static_cast<TransactionType>(data[i]);
+               txType = static_cast<TransactionType>(data[i]);
                byteIndex = 0;
                break;
             case TransactionType::newOrder:
@@ -110,7 +110,7 @@ class Parser
             case TransactionType::paymentByName:
                parsePaymentByName(data[i], callback);
                break;
-            case TransactionType::aborted:
+            default:
                throw "invalid transaction type";
          }
          byteIndex++;
@@ -121,7 +121,7 @@ class Parser
    size_t fieldIndex = 0;
    size_t vecIndex = 0;
    size_t byteIndex = 0;
-   TransactionType funcID = TransactionType::notSet;
+   TransactionType txType = TransactionType::notSet;
    FunctionParams params;
    VectorParams vParams;
    Net::OBuffer<uint8_t>& oBuffer;
@@ -129,8 +129,8 @@ class Parser
    inline void setUpNewPaket()
    {
       fieldIndex = 0;
-      byteIndex = 0;
-      funcID = TransactionType::notSet;
+      byteIndex = 0;  // TODO delete?
+      txType = TransactionType::notSet;
    }
 
    template <typename Func>
