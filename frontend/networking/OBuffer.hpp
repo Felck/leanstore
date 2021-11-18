@@ -43,6 +43,7 @@ class OBuffer
       push(reinterpret_cast<uint8_t*>(&d), reinterpret_cast<uint8_t*>(&d) + 8);
    }
 
+   // TODO add throwing template and move specialisation out of this file (decouple from tpcc type varchar)
    template <int maxLength>
    void pushVC(const Varchar<maxLength>& data)
    {
@@ -74,16 +75,24 @@ class OBuffer
 
    bool empty() { return buffer.empty(); }
 
-   void setResetPoint() { resetIdx = buffer.size(); }
-
-   void reset()
+   size_t setResetPoint()
    {
-      buffer.erase(buffer.begin() + resetIdx, buffer.end());
-      resetIdx = 0;
+      resetIdxs.push_back(buffer.size());
+      return resetIdxs.size() - 1;
    };
+
+   void dropResetPoint(size_t i) { resetIdxs.erase(resetIdxs.begin() + i, resetIdxs.end()); }
+
+   void reset(size_t i) { buffer.erase(buffer.begin() + resetIdxs[i], buffer.end()); };
+
+   void resetAndDrop(size_t i)
+   {
+      reset(i);
+      dropResetPoint(i);
+   }
 
   private:
    std::vector<T> buffer;
-   size_t resetIdx;
+   std::vector<size_t> resetIdxs;
 };
 }  // namespace Net

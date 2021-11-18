@@ -44,7 +44,7 @@ void newOrder(Integer w_id,
 void delivery(Integer w_id, Integer carrier_id, Timestamp datetime);
 void stockLevel(Integer w_id, Integer d_id, Integer threshold, Net::OBuffer<uint8_t>& oBuffer);
 void orderStatusId(Integer w_id, Integer d_id, Integer c_id, Net::OBuffer<uint8_t>& oBuffer);
-void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last, Net::OBuffer<uint8_t>& oBuffer);
+void orderStatusName(Integer w_id, Integer d_id, Varchar<16> c_last, Net::OBuffer<uint8_t>& oBuffer, size_t resetIdx);
 void paymentById(Integer w_id,
                  Integer d_id,
                  Integer c_w_id,
@@ -62,5 +62,6 @@ void paymentByName(Integer w_id,
                    Timestamp h_date,
                    Numeric h_amount,
                    Timestamp datetime,
-                   Net::OBuffer<uint8_t>& oBuffer);
+                   Net::OBuffer<uint8_t>& oBuffer,
+                   size_t resetIdx);
 }  // namespace TPCC
