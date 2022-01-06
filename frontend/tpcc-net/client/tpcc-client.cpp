@@ -16,7 +16,7 @@
 
 DEFINE_string(ip, "localhost", "Server IP adress");
 DEFINE_uint32(port, 8888, "Server port");
-DEFINE_uint32(threads, 4, "Number of threads");
+DEFINE_uint32(threads, 1, "Number of threads");
 DEFINE_uint32(run_for_secs, 0, "");
 DEFINE_uint32(tpcc_warehouse_count, 1, "");
 
@@ -42,8 +42,13 @@ void runThread(int t_i, std::atomic<bool>& keepRunning)
    address.sin_family = AF_INET;
    inet_aton(FLAGS_ip.c_str(), &(address.sin_addr));
    address.sin_port = htons(FLAGS_port);
+
    // connect to server
    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+   struct timeval tv;
+   tv.tv_sec = 1;
+   tv.tv_usec = 0;
+   setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
    if (connect(sockfd, (struct sockaddr*)&address, sizeof(address)) == -1) {
       perror("connect()");
       exit(EXIT_FAILURE);
@@ -61,6 +66,9 @@ void runThread(int t_i, std::atomic<bool>& keepRunning)
    while (keepRunning) {
       ssize_t n = read(sockfd, iBuf, TPCC::Parser::maxPacketSize);
       if (n == -1) {
+         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::cout << (int)t << std::endl;
+         }
          // error
          perror("read: ");
          keepRunning = false;

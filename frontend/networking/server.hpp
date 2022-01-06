@@ -72,10 +72,12 @@ class Server
    template <typename Func>
    void runThread(std::atomic<bool>& keepRunning, Func callback)
    {
+      volatile uint64_t readCnt = 0;
+      volatile uint64_t sendCnt = 0;
+
       // main loop
       struct epoll_event ev, events[1];
       Connection* connection;
-      char readBuffer[Parser::maxPacketSize];
 
       while (keepRunning) {
          // wait for epoll events
@@ -124,7 +126,7 @@ class Server
                if (ev.events & EPOLLIN) {
                   // read all data from socket until EAGAIN
                   while (keepRunning) {
-                     ssize_t n = read(ev.data.fd, readBuffer, Parser::maxPacketSize);
+                     ssize_t n = read(ev.data.fd, connection->parser.getReadBuffer(), Parser::maxPacketSize);
                      if (n == -1) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                            // all data read
@@ -145,7 +147,7 @@ class Server
                         goto continue_event_loop;
                      } else {
                         // forward readBuffer to packet protocol handler
-                        connection->parser.parse(reinterpret_cast<uint8_t*>(readBuffer), n, callback);
+                        connection->parser.parse(n, callback);
                      }
                   }
                }

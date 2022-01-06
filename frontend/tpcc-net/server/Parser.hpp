@@ -1,8 +1,4 @@
 #pragma once
-#include <endian.h>
-
-#include <atomic>
-#include <vector>
 
 #include "BitCast.hpp"
 #include "OBuffer.hpp"
@@ -11,552 +7,250 @@
 
 namespace TPCC
 {
-// TODO: investigate performance impact of changing union to variant and char[] to Varchar
-// (std::get_if shouldn't introduce much overhead over union access)
-union FunctionParams {
-   struct NewOrder {
-      uint64_t timestamp;
-      uint32_t w_id;
-      uint32_t d_id;
-      uint32_t c_id;
-      uint8_t vecSize;
-   } newOrder;
-   struct Delivery {
-      uint64_t datetime;
-      uint32_t w_id;
-      uint32_t carrier_id;
-   } delivery;
-   struct StockLevel {
-      uint32_t w_id;
-      uint32_t d_id;
-      uint32_t threshold;
-   } stockLevel;
-   struct OrderStatus {
-      uint32_t w_id;
-      uint32_t d_id;
-      uint32_t c_id;
-   } orderStatusId;
-   struct OrderStatusName {
-      uint32_t w_id;
-      uint32_t d_id;
-      char c_last[16];
-      uint8_t strLength;
-   } orderStatusName;
-   struct PaymentById {
-      uint64_t h_date;
-      uint64_t h_amount;
-      uint64_t datetime;
-      uint32_t w_id;
-      uint32_t d_id;
-      uint32_t c_w_id;
-      uint32_t c_d_id;
-      uint32_t c_id;
-   } paymentById;
-   struct PaymentByName {
-      uint64_t h_date;
-      uint64_t h_amount;
-      uint64_t datetime;
-      uint32_t w_id;
-      uint32_t d_id;
-      uint32_t c_w_id;
-      uint32_t c_d_id;
-      char c_last[16];
-      uint8_t strLength;
-   } paymentByName;
-};
-
-struct VectorParams {
-   std::vector<int32_t> lineNumbers;
-   std::vector<int32_t> supwares;
-   std::vector<int32_t> itemids;
-   std::vector<int32_t> qtys;
-};
-
 class Parser
 {
   public:
-   static constexpr size_t maxPacketSize = 262;
+   static constexpr size_t maxPacketSize = 2000;
+   static constexpr size_t alignment = 64;
+   alignas(alignment) char readBuffer[maxPacketSize];
 
    Parser(Net::OBuffer<uint8_t>& oBuffer) : oBuffer(oBuffer) {}
 
+   char* getReadBuffer() { return &readBuffer[packetSize]; }
+
    template <typename Func>
-   void parse(const uint8_t* data, size_t length, Func callback)
+   void parse(size_t n, Func callback)
    {
-      for (size_t i = 0; i != length; i++) {
-         switch (txType) {
-            case TransactionType::notSet:
-               // new paket: read function ID
-               txType = static_cast<TransactionType>(data[i]);
-               byteIndex = 0;
-               break;
+      length += n;
+
+      if (packetSize == 0 && length >= 2) {
+         packetSize = (static_cast<uint8_t>(readBuffer[0]) << 8) + static_cast<uint8_t>(readBuffer[1]);
+      }
+
+      if (length == packetSize) {
+         switch (static_cast<TransactionType>(readBuffer[2])) {
             case TransactionType::newOrder:
-               parseNewOrder(data[i], callback);
+               parseNewOrder(callback);
                break;
             case TransactionType::delivery:
-               parseDelivery(data[i], callback);
+               parseDelivery(callback);
                break;
             case TransactionType::stockLevel:
-               parseStockLevel(data[i], callback);
+               parseStockLevel(callback);
                break;
             case TransactionType::orderStatusId:
-               parseOrderStatusId(data[i], callback);
+               parseOrderStatusId(callback);
                break;
             case TransactionType::orderStatusName:
-               parseOrderStatusName(data[i], callback);
+               parseOrderStatusName(callback);
                break;
             case TransactionType::paymentById:
-               parsePaymentById(data[i], callback);
+               parsePaymentById(callback);
                break;
             case TransactionType::paymentByName:
-               parsePaymentByName(data[i], callback);
+               parsePaymentByName(callback);
                break;
             default:
                throw "invalid transaction type";
          }
-         byteIndex++;
+
+         length = 0;
+         packetSize = 0;
       }
    }
 
   private:
-   size_t fieldIndex = 0;
-   size_t vecIndex = 0;
-   size_t byteIndex = 0;
-   TransactionType txType = TransactionType::notSet;
-   FunctionParams params;
-   VectorParams vParams;
+   size_t length = 0;
+   size_t packetSize = 0;
    Net::OBuffer<uint8_t>& oBuffer;
 
-   inline void setUpNewPaket()
-   {
-      fieldIndex = 0;
-      byteIndex = 0;  // TODO delete?
-      txType = TransactionType::notSet;
-   }
-
    template <typename Func>
-   void parseNewOrder(uint8_t data, Func callback)
+   void parseNewOrder(Func callback)
    {
-      switch (fieldIndex) {
-         case 0:
-            // read vector lengths and resize
-            params.newOrder.vecSize = data;
-            vParams.lineNumbers.resize(data);
-            vParams.supwares.resize(data);
-            vParams.itemids.resize(data);
-            vParams.qtys.resize(data);
-            vecIndex = 0;
-            fieldIndex++;
-            byteIndex = 0;
-            break;
-         case 1:
-            parse32(params.newOrder.w_id, data);
-            break;
-         case 2:
-            parse32(params.newOrder.d_id, data);
-            break;
-         case 3:
-            parse32(params.newOrder.c_id, data);
-            break;
-         case 4:
-            parseVecElement(vParams.lineNumbers.at(vecIndex), data);
-            break;
-         case 5:
-            parseVecElement(vParams.supwares.at(vecIndex), data);
-            break;
-         case 6:
-            parseVecElement(vParams.itemids.at(vecIndex), data);
-            break;
-         case 7:
-            parseVecElement(vParams.qtys.at(vecIndex), data);
-            break;
-         case 8:
-            parse64AndRun(params.newOrder.timestamp, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
+      size_t vecLength = readBuffer[3];
+      std::vector<Integer> lineNumbers(vecLength);
+      std::vector<Integer> supwares(vecLength);
+      std::vector<Integer> itemIds(vecLength);
+      std::vector<Integer> qtys(vecLength);
+      size_t cpyIndex = 28;
+      std::memcpy(&lineNumbers[0], &readBuffer[cpyIndex], vecLength * sizeof(Integer));
+      cpyIndex += vecLength * sizeof(Integer);
+      std::memcpy(&supwares[0], &readBuffer[cpyIndex], vecLength * sizeof(Integer));
+      cpyIndex += vecLength * sizeof(Integer);
+      std::memcpy(&itemIds[0], &readBuffer[cpyIndex], vecLength * sizeof(Integer));
+      cpyIndex += vecLength * sizeof(Integer);
+      std::memcpy(&qtys[0], &readBuffer[cpyIndex], vecLength * sizeof(Integer));
 
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::newOrder));
-                  newOrder(params.newOrder.w_id, params.newOrder.d_id, params.newOrder.c_id, vParams.lineNumbers, vParams.supwares, vParams.itemids,
-                           vParams.qtys, params.newOrder.timestamp, oBuffer);
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
 
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                     // TODO push data for rolled back new order transaction to oBuffer
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::newOrder));
+         newOrder(bit_cast<Integer>(&readBuffer[16]), bit_cast<Integer>(&readBuffer[20]), bit_cast<Integer>(&readBuffer[24]), lineNumbers, supwares,
+                  itemIds, qtys, bit_cast<Timestamp>(&readBuffer[8]), oBuffer);
 
-   template <typename Func>
-   void parseDelivery(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            parse32(params.delivery.w_id, data);
-            break;
-         case 1:
-            parse32(params.delivery.carrier_id, data);
-            break;
-         case 2:
-            parse64AndRun(params.delivery.datetime, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::delivery));
-                  delivery(params.delivery.w_id, params.delivery.carrier_id, params.delivery.datetime);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
-
-   template <typename Func>
-   void parseStockLevel(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            parse32(params.stockLevel.w_id, data);
-            break;
-         case 1:
-            parse32(params.stockLevel.d_id, data);
-            break;
-         case 2:
-            parse32AndRun(params.stockLevel.threshold, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::stockLevel));
-                  stockLevel(params.stockLevel.w_id, params.stockLevel.d_id, params.stockLevel.threshold, oBuffer);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
-
-   template <typename Func>
-   void parseOrderStatusId(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            parse32(params.orderStatusId.w_id, data);
-            break;
-         case 1:
-            parse32(params.orderStatusId.d_id, data);
-            break;
-         case 2:
-            parse32AndRun(params.orderStatusId.c_id, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::orderStatusId));
-                  orderStatusId(params.orderStatusId.w_id, params.orderStatusId.d_id, params.orderStatusId.c_id, oBuffer);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
-
-   template <typename Func>
-   void parseOrderStatusName(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            // read strLength and zero char array
-            params.orderStatusName.strLength = data;
-            std::fill(&params.orderStatusName.c_last[0], &params.orderStatusName.c_last[16], 0);
-            fieldIndex++;
-            byteIndex = 0;
-            break;
-         case 1:
-            parse32(params.orderStatusName.w_id, data);
-            break;
-         case 2:
-            parse32(params.orderStatusName.d_id, data);
-            break;
-         case 3:
-            // read char array
-            params.orderStatusName.c_last[byteIndex - 1] = data;
-            if (byteIndex == params.orderStatusName.strLength) {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::orderStatusName));
-                  orderStatusName(params.orderStatusName.w_id, params.orderStatusName.d_id, Varchar<16>(params.orderStatusName.c_last), oBuffer, i);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            }
-            break;
-      }
-   }
-
-   template <typename Func>
-   void parsePaymentById(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            parse32(params.paymentById.w_id, data);
-            break;
-         case 1:
-            parse32(params.paymentById.d_id, data);
-            break;
-         case 2:
-            parse32(params.paymentById.c_w_id, data);
-            break;
-         case 3:
-            parse32(params.paymentById.c_d_id, data);
-            break;
-         case 4:
-            parse32(params.paymentById.c_id, data);
-            break;
-         case 5:
-            parse64(params.paymentById.h_date, data);
-            break;
-         case 6:
-            parse64(params.paymentById.h_amount, data);
-            break;
-         case 7:
-            parse64AndRun(params.paymentById.datetime, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::paymentById));
-                  paymentById(params.paymentById.w_id, params.paymentById.d_id, params.paymentById.c_w_id, params.paymentById.c_d_id,
-                              params.paymentById.c_id, params.paymentById.h_date, bit_cast<double>(params.paymentById.h_amount),
-                              params.paymentById.datetime, oBuffer);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
-
-   template <typename Func>
-   void parsePaymentByName(uint8_t data, Func callback)
-   {
-      switch (fieldIndex) {
-         case 0:
-            // read strLength and zero char array
-            params.paymentByName.strLength = data;
-            std::fill(&params.paymentByName.c_last[0], &params.paymentByName.c_last[16], 0);
-            fieldIndex++;
-            byteIndex = 0;
-            break;
-         case 1:
-            parse32(params.paymentByName.w_id, data);
-            break;
-         case 2:
-            parse32(params.paymentByName.d_id, data);
-            break;
-         case 3:
-            parse32(params.paymentByName.c_w_id, data);
-            break;
-         case 4:
-            parse32(params.paymentByName.c_d_id, data);
-            break;
-         case 5:
-            // read char array
-            params.paymentByName.c_last[byteIndex - 1] = data;
-            if (byteIndex == params.paymentByName.strLength) {
-               fieldIndex++;
-               byteIndex = 0;
-            }
-            break;
-         case 6:
-            parse64(params.paymentByName.h_date, data);
-            break;
-         case 7:
-            parse64(params.paymentByName.h_amount, data);
-            break;
-         case 8:
-            parse64AndRun(params.paymentByName.datetime, data, [&]() {
-               jumpmuTry()
-               {
-                  cr::Worker::my().startTX();
-                  size_t i = oBuffer.setResetPoint();
-
-                  oBuffer.push8(static_cast<uint8_t>(TransactionType::paymentByName));
-                  paymentByName(params.paymentByName.w_id, params.paymentByName.d_id, params.paymentByName.c_w_id, params.paymentByName.c_d_id,
-                                Varchar<16>(params.paymentByName.c_last), params.paymentByName.h_date,
-                                bit_cast<double>(params.paymentByName.h_amount), params.paymentByName.datetime, oBuffer, i);
-
-                  if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
-                     cr::Worker::my().abortTX();
-                     oBuffer.resetAndDrop(i);
-                     oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
-                  } else {
-                     oBuffer.dropResetPoint(i);
-                     cr::Worker::my().commitTX();
-                     callback();
-                  }
-               }
-               jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
-               setUpNewPaket();
-            });
-            break;
-      }
-   }
-
-   inline void parse32(uint32_t& dest, uint8_t data)
-   {
-      parse32AndRun(dest, data, [&]() {
-         fieldIndex++;
-         byteIndex = 0;
-      });
-   }
-
-   inline void parse64(uint64_t& dest, uint8_t data)
-   {
-      parse64AndRun(dest, data, [&]() {
-         fieldIndex++;
-         byteIndex = 0;
-      });
-   }
-
-   inline void parseVecElement(int32_t& dest, uint8_t data)
-   {
-      parse32AndRun(*reinterpret_cast<uint32_t*>(&dest), data, [&]() {
-         vecIndex++;
-         byteIndex = 0;
-         if (vecIndex == params.newOrder.vecSize) {
-            vecIndex = 0;
-            fieldIndex++;
-         }
-      });
-   }
-
-   template <typename Func>
-   void parse32AndRun(uint32_t& dest, uint8_t data, Func callback)
-   {
-      switch (byteIndex) {
-         case 1:
-            dest = static_cast<uint32_t>(data) << 24;
-            break;
-         case 2:
-            dest |= static_cast<uint32_t>(data) << 16;
-            break;
-         case 3:
-            dest |= static_cast<uint32_t>(data) << 8;
-            break;
-         case 4:
-            dest |= static_cast<uint32_t>(data);
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+            // TODO push data for rolled back new order transaction to oBuffer
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
             callback();
-            break;
-         default:
-            throw "byte index out of range";
+         }
       }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
    }
 
    template <typename Func>
-   void parse64AndRun(uint64_t& dest, uint8_t data, Func callBack)
+   void parseDelivery(Func callback)
    {
-      switch (byteIndex) {
-         case 1:
-            dest = static_cast<uint64_t>(data) << 56;
-            break;
-         case 2:
-            dest |= static_cast<uint64_t>(data) << 48;
-            break;
-         case 3:
-            dest |= static_cast<uint64_t>(data) << 40;
-            break;
-         case 4:
-            dest |= static_cast<uint64_t>(data) << 32;
-            break;
-         case 5:
-            dest |= static_cast<uint64_t>(data) << 24;
-            break;
-         case 6:
-            dest |= static_cast<uint64_t>(data) << 16;
-            break;
-         case 7:
-            dest |= static_cast<uint64_t>(data) << 8;
-            break;
-         case 8:
-            dest |= static_cast<uint64_t>(data);
-            callBack();
-            break;
-         default:
-            throw "byte index out of range";
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::delivery));
+         delivery(bit_cast<Timestamp>(&readBuffer[16]), bit_cast<Integer>(&readBuffer[20]), bit_cast<Integer>(&readBuffer[8]));
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
       }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
+   }
+
+   template <typename Func>
+   void parseStockLevel(Func callback)
+   {
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::stockLevel));
+         stockLevel(bit_cast<Integer>(&readBuffer[8]), bit_cast<Integer>(&readBuffer[12]), bit_cast<Integer>(&readBuffer[16]), oBuffer);
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
+      }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
+   }
+
+   template <typename Func>
+   void parseOrderStatusId(Func callback)
+   {
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::orderStatusId));
+         orderStatusId(bit_cast<Integer>(&readBuffer[8]), bit_cast<Integer>(&readBuffer[12]), bit_cast<Integer>(&readBuffer[16]), oBuffer);
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
+      }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
+   }
+
+   template <typename Func>
+   void parseOrderStatusName(Func callback)
+   {
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::orderStatusName));
+         orderStatusName(bit_cast<Integer>(&readBuffer[8]), bit_cast<Integer>(&readBuffer[12]), Varchar<16>(&readBuffer[12], readBuffer[3]), oBuffer,
+                         i);
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
+      }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
+   }
+
+   template <typename Func>
+   void parsePaymentById(Func callback)
+   {
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::paymentById));
+         paymentById(bit_cast<Integer>(&readBuffer[32]), bit_cast<Integer>(&readBuffer[36]), bit_cast<Integer>(&readBuffer[40]),
+                     bit_cast<Integer>(&readBuffer[44]), bit_cast<Integer>(&readBuffer[48]), bit_cast<Timestamp>(&readBuffer[8]),
+                     bit_cast<double>(&readBuffer[16]), bit_cast<Timestamp>(&readBuffer[24]), oBuffer);
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
+      }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
+   }
+
+   template <typename Func>
+   void parsePaymentByName(Func callback)
+   {
+      jumpmuTry()
+      {
+         cr::Worker::my().startTX();
+         size_t i = oBuffer.setResetPoint();
+
+         oBuffer.push8(static_cast<uint8_t>(TransactionType::paymentByName));
+         paymentByName(bit_cast<Integer>(&readBuffer[32]), bit_cast<Integer>(&readBuffer[36]), bit_cast<Integer>(&readBuffer[40]),
+                       bit_cast<Integer>(&readBuffer[44]), Varchar<16>(&readBuffer[48], readBuffer[3]), bit_cast<Timestamp>(&readBuffer[8]),
+                       bit_cast<double>(&readBuffer[16]), bit_cast<Timestamp>(&readBuffer[24]), oBuffer, i);
+
+         if (FLAGS_tpcc_abort_pct && urand(0, 100) <= FLAGS_tpcc_abort_pct) {
+            cr::Worker::my().abortTX();
+            oBuffer.resetAndDrop(i);
+            oBuffer.push8(static_cast<uint8_t>(TransactionType::aborted));
+         } else {
+            oBuffer.dropResetPoint(i);
+            cr::Worker::my().commitTX();
+            callback();
+         }
+      }
+      jumpmuCatch() { WorkerCounters::myCounters().tx_abort++; }
    }
 };
 }  // namespace TPCC

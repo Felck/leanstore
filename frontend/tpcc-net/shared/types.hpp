@@ -25,6 +25,12 @@ struct Varchar {
       length = l;
       memcpy(data, str, l);
    }
+   Varchar(const char* str, size_t l)
+   {
+      assert(l <= maxLength);
+      length = l;
+      memcpy(data, str, l);
+   }
    template <int otherMaxLength>
    Varchar(const Varchar<otherMaxLength>& other)
    {
