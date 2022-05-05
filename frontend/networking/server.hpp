@@ -1,6 +1,7 @@
 #pragma once
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -38,7 +39,7 @@ class Server
       // NOTE: tcp packets from a previous run could still be pending
       int enable = 1;
       if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-         perror("setsockopt()");
+         perror("setsockopt(SO_REUSEADDR)");
          exit(EXIT_FAILURE);
       }
 
@@ -107,6 +108,12 @@ class Server
                pthread_rwlock_wrlock(&connLatch);
                connections.try_emplace(connfd, connfd);
                pthread_rwlock_unlock(&connLatch);
+
+               int enable = 1;
+               if (setsockopt(connfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) == -1) {
+                  perror("setsockopt(TCP_NODELAY)");
+                  exit(EXIT_FAILURE);
+               }
 
                setNonBlocking(connfd);
                ev.data.fd = connfd;
