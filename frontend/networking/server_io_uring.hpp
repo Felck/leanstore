@@ -3,7 +3,6 @@
 #include <fcntl.h>
 #include <liburing.h>
 #include <netinet/tcp.h>
-#include <sys/epoll.h>
 #include <unistd.h>
 
 #include <thread>
@@ -23,6 +22,10 @@ class Server
 
    void init(uint16_t port)
    {
+      // init uring
+      constexpr uint QUEUE_DEPTH = 256;
+      io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+
       // create socket
       if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
          perror("socket()");
@@ -36,12 +39,6 @@ class Server
          perror("setsockopt(SO_REUSEADDR)");
          exit(EXIT_FAILURE);
       }
-
-      // register listening socket
-      struct epoll_event ev;
-      memset(&ev, 0, sizeof(ev));
-      ev.data.fd = listenfd;
-      ev.events = EPOLLIN | EPOLLEXCLUSIVE;
 
       // bind and listen
       struct sockaddr_in serveraddr;
@@ -61,9 +58,6 @@ class Server
    template <typename Func>
    void runThread(std::atomic<bool>& keepRunning, Func callback)
    {
-      volatile uint64_t readCnt = 0;
-      volatile uint64_t sendCnt = 0;
-
       struct io_uring_cqe* cqe;
       struct sockaddr_in clientaddr;
       socklen_t clilen = sizeof(clientaddr);
@@ -78,32 +72,32 @@ class Server
             exit(EXIT_FAILURE);
          }
          if (cqe->res < 0) {
-            fprintf(stderr, "Async request failed: %s for event: %d\n", strerror(-cqe->res), req->event_type);
+            fprintf(stderr, "Async request failed: %s for event: %d\n", strerror(-cqe->res), static_cast<int>(con->eventType));
             exit(EXIT_FAILURE);
          }
 
-         switch (req->event_type) {
+         switch (con->eventType) {
             case EventType::accept:
                con->fd = cqe->res;
                addReadRequest(con);
                addAcceptRequest(listenfd, &clientaddr, &clilen);
                break;
             case EventType::read:
-               if (!cqe->res) {
-                  fprintf(stderr, "Empty request!\n");
-                  break;
+               if (cqe->res == 0) {
+                  // close connection
+                  close(con->fd);
+                  delete con;
                }
-               handle_client_request(con);
-               // TODO delete
-               delete req->iov[0].iov_base;
-               delete req;
+               con->parser.parse(cqe->res, callback);
+               addWriteRequest(con);
                break;
             case EventType::write:
-               for (int i = 0; i < req->iovec_count; i++) {
-                  free(req->iov[i].iov_base);
+               con->oBuffer.pop_front(cqe->res);
+               if (!con->oBuffer.empty()) {
+                  addWriteRequest(con);
+               } else {
+                  addReadRequest(con);
                }
-               close(req->fd);
-               delete req;
                break;
          }
          // mark this request as processed
@@ -115,11 +109,9 @@ class Server
    enum class EventType : int { accept = 0, read = 1, write = 2 };
 
    struct Connection {
-      ssize_t send() { return oBuffer.send(fd); };
-
       OBuffer<uint8_t> oBuffer;
       Parser parser{oBuffer};
-      EventType eventType = EventType::accept;
+      EventType eventType;
       int fd;
    };
 
@@ -129,35 +121,32 @@ class Server
    std::unordered_map<int, Connection> connections;
    pthread_rwlock_t connLatch;
 
-   void closeConnection(int fd)
+   void addAcceptRequest(int server_socket, struct sockaddr_in* client_addr, socklen_t* client_addr_len)
    {
-      pthread_rwlock_wrlock(&connLatch);
-      connections.erase(fd);
-      pthread_rwlock_unlock(&connLatch);
-      close(fd);
-   }
-
-   int addAcceptRequest(int server_socket, struct sockaddr_in* client_addr, socklen_t* client_addr_len)
-   {
+      struct Connection* con = new Connection();
+      con->eventType = EventType::accept;
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
       io_uring_prep_accept(sqe, server_socket, (struct sockaddr*)client_addr, client_addr_len, 0);
-      struct Connection* con = new Connection();
       io_uring_sqe_set_data(sqe, con);
       io_uring_submit(&ring);
-
-      return 0;
    }
 
-   int addReadRequest(Connection* con)
+   void addReadRequest(Connection* con)
    {
-      struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
       con->eventType = EventType::read;
-      memset(req->iov[0].iov_base, 0, READ_SZ);
-      /* Linux kernel 5.5 has support for readv, but not for recv() or read() */
-      io_uring_prep_readv(sqe, client_socket, &req->iov[0], 1, 0);
-      io_uring_sqe_set_data(sqe, req);
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+      io_uring_prep_read(sqe, con->fd, con->parser.getReadBuffer(), Parser::maxPacketSize, 0);
+      io_uring_sqe_set_data(sqe, con);
       io_uring_submit(&ring);
-      return 0;
+   }
+
+   void addWriteRequest(Connection* con)
+   {
+      con->eventType = EventType::write;
+      struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+      io_uring_prep_write(sqe, con->fd, &(con->oBuffer.buffer)[0], con->oBuffer.buffer.size(), 0);
+      io_uring_sqe_set_data(sqe, con);
+      io_uring_submit(&ring);
    }
 };
 }  // namespace Net

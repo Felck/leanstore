@@ -73,6 +73,17 @@ class OBuffer
       return n;
    };
 
+   void pop_front(size_t n)
+   {
+      if (n > 0) {
+         if (static_cast<size_t>(n) == buffer.size()) {
+            buffer.clear();
+         } else {
+            buffer.erase(buffer.begin(), buffer.begin() + n);
+         }
+      }
+   }
+
    bool empty() { return buffer.empty(); }
 
    size_t setResetPoint()
@@ -91,7 +102,7 @@ class OBuffer
       dropResetPoint(i);
    }
 
-  private:
+   // private:
    std::vector<T> buffer;
    std::vector<size_t> resetIdxs;
 };

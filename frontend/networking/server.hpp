@@ -73,9 +73,6 @@ class Server
    template <typename Func>
    void runThread(std::atomic<bool>& keepRunning, Func callback)
    {
-      volatile uint64_t readCnt = 0;
-      volatile uint64_t sendCnt = 0;
-
       // main loop
       struct epoll_event ev, events[1];
       Connection* connection;
