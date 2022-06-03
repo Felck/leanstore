@@ -6,7 +6,6 @@
 #include <unistd.h>
 
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "OBuffer.hpp"
@@ -17,26 +16,24 @@ template <class Parser>
 class Server
 {
   public:
-   Server() { pthread_rwlock_init(&connLatch, NULL); };
-   ~Server() { pthread_rwlock_destroy(&connLatch); };
+   Server(){};
+   ~Server(){};
 
    void init(uint16_t port)
-   {
-      // init uring
-      constexpr uint QUEUE_DEPTH = 256;
-      io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
-
-      // create socket
+   {  // create socket
       if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
          perror("socket()");
          exit(EXIT_FAILURE);
       }
 
-      // allow immediate address reuse on restart
-      // NOTE: tcp packets from a previous run could still be pending
+      // allow multiple listening sockets on same port
       int enable = 1;
       if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-         perror("setsockopt(SO_REUSEADDR)");
+         perror("setsockopt(SO_REUSEPORT)");
+         exit(EXIT_FAILURE);
+      }
+      if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
+         perror("setsockopt(SO_REUSEPORT)");
          exit(EXIT_FAILURE);
       }
 
@@ -58,48 +55,100 @@ class Server
    template <typename Func>
    void runThread(std::atomic<bool>& keepRunning, Func callback)
    {
+      // init uring
+      struct io_uring ring;
+      constexpr uint QUEUE_DEPTH = 256;
+      struct io_uring_params params;
+      memset(&params, 0, sizeof(params));
+
+      if (uring_wq_fd == -1) {
+         params.flags |= IORING_SETUP_SQPOLL;
+         params.sq_thread_idle = 2000;
+         uring_wq_fd = io_uring_queue_init_params(QUEUE_DEPTH, &ring, &params);
+         if (uring_wq_fd == -1) {
+            perror("uring_queue_init()");
+            exit(EXIT_FAILURE);
+         }
+      } else {
+         params.flags |= IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+         params.wq_fd = uring_wq_fd;
+         params.sq_thread_idle = 2000;
+         if (io_uring_queue_init_params(QUEUE_DEPTH, &ring, &params) == -1) {
+            perror("uring_queue_init()");
+            exit(EXIT_FAILURE);
+         }
+      }
+
       struct io_uring_cqe* cqe;
       struct sockaddr_in clientaddr;
       socklen_t clilen = sizeof(clientaddr);
 
-      addAcceptRequest(listenfd, &clientaddr, &clilen);
+      addAcceptRequest(ring, listenfd, &clientaddr, &clilen);
 
       while (keepRunning) {
          int ret = io_uring_wait_cqe(&ring, &cqe);
-         struct Connection* con = (struct Connection*)cqe->user_data;
          if (ret < 0) {
             perror("io_uring_wait_cqe()");
             exit(EXIT_FAILURE);
          }
-         if (cqe->res < 0) {
-            fprintf(stderr, "Async request failed: %s for event: %d\n", strerror(-cqe->res), static_cast<int>(con->eventType));
-            exit(EXIT_FAILURE);
-         }
+         struct Connection* con = (struct Connection*)cqe->user_data;
 
          switch (con->eventType) {
             case EventType::accept:
+               if (cqe->res < 0) {
+                  fprintf(stderr, "accept(): %s\n", strerror(-cqe->res));
+                  exit(EXIT_FAILURE);
+               }
                con->fd = cqe->res;
-               addReadRequest(con);
-               addAcceptRequest(listenfd, &clientaddr, &clilen);
+               addReadRequest(ring, con);
+               addAcceptRequest(ring, listenfd, &clientaddr, &clilen);
                break;
             case EventType::read:
+               if (cqe->res < 0) {
+                  if (-cqe->res == ECONNRESET) {
+                     // close connection
+                     close(con->fd);
+                     delete con;
+                     break;
+                  } else {
+                     fprintf(stderr, "read(): %s\n", strerror(-cqe->res));
+                     exit(EXIT_FAILURE);
+                  }
+               }
                if (cqe->res == 0) {
                   // close connection
                   close(con->fd);
                   delete con;
+                  break;
                }
                con->parser.parse(cqe->res, callback);
-               addWriteRequest(con);
+               // if (con->parser.packetComplete())
+               addWriteRequest(ring, con);  // optimization: another readRequest unless a complete packet was received
+               // else
+               //   addReadRequest(ring, con);
+
                break;
             case EventType::write:
+               if (cqe->res < 0) {
+                  if (-cqe->res == ECONNRESET) {
+                     // close connection
+                     close(con->fd);
+                     delete con;
+                     break;
+                  } else {
+                     fprintf(stderr, "write(): %s\n", strerror(-cqe->res));
+                     exit(EXIT_FAILURE);
+                  }
+               }
                con->oBuffer.pop_front(cqe->res);
                if (!con->oBuffer.empty()) {
-                  addWriteRequest(con);
+                  addWriteRequest(ring, con);
                } else {
-                  addReadRequest(con);
+                  addReadRequest(ring, con);
                }
                break;
          }
+
          // mark this request as processed
          io_uring_cqe_seen(&ring, cqe);
       }
@@ -115,13 +164,11 @@ class Server
       int fd;
    };
 
-   struct io_uring ring;
    int listenfd;
+   int uring_wq_fd = -1;
    std::vector<std::thread> threads;
-   std::unordered_map<int, Connection> connections;
-   pthread_rwlock_t connLatch;
 
-   void addAcceptRequest(int server_socket, struct sockaddr_in* client_addr, socklen_t* client_addr_len)
+   void addAcceptRequest(io_uring& ring, int server_socket, struct sockaddr_in* client_addr, socklen_t* client_addr_len)
    {
       struct Connection* con = new Connection();
       con->eventType = EventType::accept;
@@ -131,7 +178,7 @@ class Server
       io_uring_submit(&ring);
    }
 
-   void addReadRequest(Connection* con)
+   void addReadRequest(io_uring& ring, Connection* con)
    {
       con->eventType = EventType::read;
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
@@ -140,7 +187,7 @@ class Server
       io_uring_submit(&ring);
    }
 
-   void addWriteRequest(Connection* con)
+   void addWriteRequest(io_uring& ring, Connection* con)
    {
       con->eventType = EventType::write;
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
