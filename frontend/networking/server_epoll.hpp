@@ -14,11 +14,11 @@
 namespace Net
 {
 template <class Parser>
-class Server
+class ServerEpoll
 {
   public:
-   Server() { pthread_rwlock_init(&connLatch, NULL); };
-   ~Server() { pthread_rwlock_destroy(&connLatch); };
+   ServerEpoll() { pthread_rwlock_init(&connLatch, NULL); };
+   ~ServerEpoll() { pthread_rwlock_destroy(&connLatch); };
 
    void init(uint16_t port)
    {

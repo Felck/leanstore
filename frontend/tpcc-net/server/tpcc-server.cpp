@@ -14,13 +14,15 @@
 #include "leanstore/utils/Parallelize.hpp"
 #include "leanstore/utils/RandomGenerator.hpp"
 #include "leanstore/utils/ZipfGenerator.hpp"
-#include "server.hpp"
+#include "server_epoll.hpp"
+#include "server_io_uring.hpp"
 #include "workload.hpp"
 // -------------------------------------------------------------------------------------
 DEFINE_uint32(port, 8888, "");
 DEFINE_uint64(run_until_tx, 0, "");
 DEFINE_bool(tpcc_warehouse_affinity, false, "");
 DEFINE_bool(tpcc_fast_load, false, "");
+DEFINE_bool(uring_server, true, "Use io_uring server if true or epoll server if false.");
 // -------------------------------------------------------------------------------------
 using namespace std;
 using namespace leanstore;
@@ -93,8 +95,13 @@ int main(int argc, char** argv)
    cout << "data loaded - consumed space in GiB = " << gib << endl;
    crm.scheduleJobSync(0, [&]() { cout << "Warehouse pages = " << warehouse.btree->countPages() << endl; });
    // -------------------------------------------------------------------------------------
-   Net::Server<Parser> server;
-   server.init(FLAGS_port);
+   Net::ServerEpoll<Parser> serverEpoll;
+   Net::ServerIOUring<Parser> serverUring;
+   if (FLAGS_uring_server) {
+      serverUring.init(FLAGS_port);
+   } else {
+      serverEpoll.init(FLAGS_port);
+   }
 
    atomic<bool> keep_running = true;
    atomic<u64> running_threads_counter = 0;
@@ -108,10 +115,17 @@ int main(int argc, char** argv)
          running_threads_counter++;
          volatile u64 tx_acc = 0;
          cr::Worker::my().refreshSnapshot();
-         server.runThread(keep_running, [&]() {
-            WorkerCounters::myCounters().tx++;
-            tx_acc++;
-         });
+         if (FLAGS_uring_server) {
+            serverUring.runThread(keep_running, [&]() {
+               WorkerCounters::myCounters().tx++;
+               tx_acc++;
+            });
+         } else {
+            serverEpoll.runThread(keep_running, [&]() {
+               WorkerCounters::myCounters().tx++;
+               tx_acc++;
+            });
+         }
          tx_per_thread[t_i] = tx_acc;
          running_threads_counter--;
       });

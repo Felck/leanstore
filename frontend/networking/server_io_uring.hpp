@@ -13,11 +13,11 @@
 namespace Net
 {
 template <class Parser>
-class Server
+class ServerIOUring
 {
   public:
-   Server(){};
-   ~Server(){};
+   ServerIOUring(){};
+   ~ServerIOUring(){};
 
    void init(uint16_t port)
    {  // create socket
@@ -26,13 +26,10 @@ class Server
          exit(EXIT_FAILURE);
       }
 
-      // allow multiple listening sockets on same port
+      // allow immediate address reuse on restart
+      // NOTE: tcp packets from a previous run could still be pending
       int enable = 1;
       if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
-         perror("setsockopt(SO_REUSEPORT)");
-         exit(EXIT_FAILURE);
-      }
-      if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
          perror("setsockopt(SO_REUSEPORT)");
          exit(EXIT_FAILURE);
       }
@@ -85,6 +82,7 @@ class Server
 
       addAcceptRequest(ring, listenfd, &clientaddr, &clilen);
 
+      // event loop
       while (keepRunning) {
          int ret = io_uring_wait_cqe(&ring, &cqe);
          if (ret < 0) {
