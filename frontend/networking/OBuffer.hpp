@@ -84,6 +84,10 @@ class OBuffer
       }
    }
 
+   T* getBuffer() { return &buffer[0]; }
+
+   size_t size() { return buffer.size(); }
+
    bool empty() { return buffer.empty(); }
 
    size_t setResetPoint()
@@ -102,7 +106,7 @@ class OBuffer
       dropResetPoint(i);
    }
 
-   // private:
+  private:
    std::vector<T> buffer;
    std::vector<size_t> resetIdxs;
 };

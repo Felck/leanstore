@@ -189,7 +189,7 @@ class ServerIOUring
    {
       con->eventType = EventType::write;
       struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
-      io_uring_prep_write(sqe, con->fd, &(con->oBuffer.buffer)[0], con->oBuffer.buffer.size(), 0);
+      io_uring_prep_write(sqe, con->fd, con->oBuffer.getBuffer(), con->oBuffer.size(), 0);
       io_uring_sqe_set_data(sqe, con);
       io_uring_submit(&ring);
    }

@@ -160,7 +160,8 @@ class ServerEpoll
                if (ev.events & EPOLLOUT || !buf.empty()) {
                   // write from oBuffer to socket
                   while (keepRunning) {
-                     auto n = connection->send();
+                     auto n = send(ev.data.fd, buf.getBuffer(), buf.size(), MSG_NOSIGNAL);
+                     buf.pop_front(n);
                      if (n == -1) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                            // socket buffer full
@@ -201,8 +202,6 @@ class ServerEpoll
   private:
    struct Connection {
       Connection(int fd) : fd(fd){};
-
-      ssize_t send() { return oBuffer.send(fd); };
 
       OBuffer<uint8_t> oBuffer;
       Parser parser{oBuffer};
