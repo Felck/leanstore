@@ -80,7 +80,7 @@ class ServerEpoll
       while (keepRunning) {
          // wait for epoll events
          int nfds;
-         if ((nfds = epoll_wait(epfd, events, 1, 100)) == 1000) {
+         if ((nfds = epoll_wait(epfd, events, 1, 100)) == -1) {
             perror("epoll_wait()");
             exit(EXIT_FAILURE);
          }
