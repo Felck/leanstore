@@ -18,6 +18,10 @@ class Parser
 
    char* getReadBuffer() { return &readBuffer[packetSize]; }
 
+   bool packetComplete() {
+      return length == 0;
+   }
+
    template <typename Func>
    void parse(size_t n, Func callback)
    {

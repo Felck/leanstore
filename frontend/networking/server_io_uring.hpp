@@ -120,10 +120,11 @@ class ServerIOUring
                   break;
                }
                con->parser.parse(cqe->res, callback);
-               // if (con->parser.packetComplete())
-               addWriteRequest(ring, con);  // optimization: another readRequest unless a complete packet was received
-               // else
-               //   addReadRequest(ring, con);
+               if (con->parser.packetComplete()) {
+                  addWriteRequest(ring, con);
+               } else {
+                  addReadRequest(ring, con);
+               }
 
                break;
             case EventType::write:
@@ -139,10 +140,10 @@ class ServerIOUring
                   }
                }
                con->oBuffer.pop_front(cqe->res);
-               if (!con->oBuffer.empty()) {
-                  addWriteRequest(ring, con);
-               } else {
+               if (con->oBuffer.empty()) {
                   addReadRequest(ring, con);
+               } else {
+                  addWriteRequest(ring, con);
                }
                break;
          }
